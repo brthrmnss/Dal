@@ -1,0 +1,49 @@
+
+a tells b: SyncVersion_AmICurrentWithYou: here's my current version for you
+b recieves SyncVersion_AmICurrentWithYou: if b's repo is higher than a's version for connection
+    b tells a: you are out of date. please do a sync #why not give him stuff?
+
+
+a tries sync with b
+    if b has different version
+    b tells a to syncget
+        a gets records
+
+#but what about b with a?
+
+if a has records, the b needs, but syncs with b, then how do we resolve?
+a is syncing wiht b's current records, b is syninc with a's records, there is no confusion.
+a has merc and bmw
+b has lexus and jag
+
+
+
+a ask b if it is current, with v0,
+--irl: a tells b to sync to it.
+b says no, b is at v2 b.db.
+b tells a to sync up
+a syncs up and brings  a-->b.peer up to v2
+when done, a tells b to sync  b-->a.peer
+b asks a if it is current with v0 on b-->a.peer
+a says no, a is at v2 of a.db
+a tells b to sync up
+b syncs up and brings b-->a.peer up to v2 (merc and bmw)
+
+q: how to only return merc and bmw
+don't have to sync back source items that have been updated
+--if records local updated_at is higher that global_updated_time (or different) then sync
+for everything else if global updated time is higher than
+--likely answer: with global timetamp, and updateat ad you can filter them
+--likely answer: sync only items that have updatedAt in selected range.
+
+q: revisiting global_updated_at, gut
+do we need this? yes b/c if a record is synced it will have updatedAt wrong
+
+q: what if node joins that has nodes?
+
+q: how to add a new system to the network? how ot do full integrity check?
+do random offset,
+get record #1 and #10, if they are the same and have same modified date, good,
+if not, sync them back.
+
+

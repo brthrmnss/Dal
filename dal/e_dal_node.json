@@ -1,0 +1,28 @@
+{
+	"settings": {
+		"name": "e",
+		"fileSettings": "e_dal_node.json",
+		"fileLog": "e_dal_node_log.txt",
+		"peers": [
+			"d"
+		],
+		"port": 3004,
+		"version": 1436594297000
+	},
+	"peers": [
+		{
+			"name": "d",
+			"settings": {
+				"name": "d",
+				"fileSettings": "d_dal_node.json",
+				"fileLog": "d_dal_node_log.txt",
+				"peers": [
+					"b",
+					"e"
+				],
+				"port": 3003
+			},
+			"version": 1436594683000
+		}
+	]
+}

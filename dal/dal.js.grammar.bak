@@ -1,0 +1,1294 @@
+/**
+ * Created by user on 7/7/15.
+ */
+
+
+/**
+ *
+ *
+ *
+ *CRUD items on any node
+ * sync across AS
+ * forward CRUD ... check if neighbors are not linked
+ */
+
+/*
+ what are versions?
+ last time the database or repo was updated
+ we sync by comparing versions on a connection
+ node a version for b is 0, while b is 50, so b will send all data between 0, and 50
+ version in db is based on updated time ... so any record modified is sent
+
+ i do not know if we need c, u d methods, they can call sync and send sync requests
+ */
+
+var sh = require('shelpers').shelpers;
+var shelpers = require('shelpers');
+var SequelizeHelper = shelpers.SequelizeHelper;
+var EasyRemoteTester = shelpers.EasyRemoteTester;
+
+
+
+function BasicClass() {
+    var p = BasicClass.prototype;
+    p = this;
+    var self = this;
+    p.method1 = function method1(url, appCode) {
+    }
+
+    p.proc = function debugLogger() {
+        if ( self.silent == true) {
+            return
+        }
+        sh.sLog(arguments)
+    }
+}
+
+exports.BasicClass = BasicClass;
+
+
+
+
+
+function MySQLDataRepo() {
+    var p = MySQLDataRepo.prototype;
+    p = this;
+    var self = this;
+    p.init = function init(url, fx) {
+        self.version = 0;
+        self.checkSources(function(){
+            self.ready = true;
+            sh.callIfDefined(fx)
+        });
+        self.settings = sh.dv(url, {});
+        self.tableName = self.name + '_' + 'table';
+    }
+
+    p.getVersion = function getVersion( ) {
+        return self.version;
+    }
+
+    p.setVersion = function setVersion(fx ) {
+        self.Table.findAll({ limit: 1, order: 'updatedAt DESC' }).then(function onResults(objs) {
+            if ( objs.length == 0 ) {
+                self.version = 0;
+                return;
+            }
+            self.version = objs[0].updatedAt.getTime();
+            sh.callIfDefined(fx);
+        })
+    }
+
+    function defineDbHelpers() {
+        var dbHelper = {};
+        self.dbHelper2 = dbHelper;
+        dbHelper.count = function (fx, table, name) {
+            table = sh.dv(table, self.Table);
+            console.error('count', table.name, name)
+            table.count({where:{}}).then(function onResults(count) {
+                self.count = count;
+                self.proc('count', count)
+                sh.callIfDefined(fx, count)
+                //  self.version = objs.updated_at.getTime();
+            })
+        }
+
+        dbHelper.countAll = function (fx, query) {
+            query = sh.dv(query, {});
+            self.Table.count({where:query}).then(function onResults(count) {
+                self.count = count;
+                self.proc('count', count)
+                sh.callIfDefined(fx, count)
+                //  self.version = objs.updated_at.getTime();
+            })
+        }
+
+        dbHelper.getUntilDone = function (query, limit, fx, fxDone, count) {
+            var index = 0;
+
+            if ( count == null ) {
+
+                dbHelper.countAll(function(initCount){
+                    count = initCount;
+                    nextQuery();
+                }, query)
+                return
+            }
+
+            function nextQuery(initCount) {
+                self.proc('nextQuery', index, count, (index/count).toFixed(2));
+                if ( index >= count ) {
+                    sh.callIfDefined(fxDone)
+                    sh.callIfDefined(fx, [])
+                    return;
+                };
+                index += limit;
+                self.Table.findAll(
+                    { limit: limit,
+                        where:query
+                    }
+                ).then(function onResults(objs) {
+                        var records = [];
+                        sh.each(objs, function col(i,obj) {
+                            records.push(obj.dataValues);
+                        });
+                        sh.callIfDefined(fx, records)
+                        sh.callIfDefined(nextQuery)
+                    })
+            }
+            nextQuery();
+
+
+        }
+
+    }
+
+    defineDbHelpers();
+
+
+    p.getRecords = function getRecords(toVersion, fxGotRecords ) {
+
+
+        self.proc('sending records')
+        self.setVersion(function startSendingRecords() {
+            self.dbHelper2.getUntilDone({}, 2, function returnRecords(objs){
+                self.proc('sending records', objs)
+                fxGotRecords(objs, self.version)
+            })
+        })
+
+
+        return;
+        self.count =
+            fxGotRecords([], self.version);
+        return 0;
+    }
+
+    p.create = function getVersion( records, fx ) {
+        throw( new Error('deprec') );
+        //return 0;
+
+        sh.callIfDefined(fx)
+    }
+
+    p.update = function getVersion( records, fx ) {
+        throw( new Error('deprec') );
+        return 0;
+    }
+
+    p.fxDelete = function fxDelete( records, fx) {
+        throw( new Error('deprec') );
+        return 0;
+    };
+
+    p.destroyAllRecords = function (confirmed, fx) {
+        if ( confirmed != true ) {
+            return false;
+        }
+
+        self.Table.destroy({where:{}}).then(function() {
+            sh.callIfDefined(fx);
+            self.proc('all records destroyed')
+        })
+
+    }
+
+    p.upsert = function upsert( records, fx) {
+        records = sh.forceArray(records);
+        var dict = {};
+        var dictOfExistingItems = dict;
+        var queryInner = {};
+        var statements = [];
+
+        var newRecords = [];
+
+        self.proc(self.name, ':','upsert', records.length );
+        sh.each(records, function putInDict(i,record){
+            if ( record.timestamp == null || record.source_node == null ) {
+                newRecords.push(record);
+                record.timestamp = new Date();
+                record.source_node = self.name;
+                record.updatedAt2 = new Date();
+                //delete records[id]
+                record.id = null;
+                return;
+            }
+            if ( sh.isString(record.timestamp)) {
+                record.timestamp = new Date(record.timestamp);
+            }
+            if ( sh.isString(record.updatedAt2)) {
+                record.updatedAt2 = new Date(record.updatedAt2);
+            }
+
+            dict[record.timestamp.getTime()+record.source_node] = record;
+            /*statements.push(SequelizeHelper.Sequlize.AND(
+
+
+             ))*/
+
+            statements.push({
+                timestamp:record.timestamp,
+                source_node:record.source_node
+            });
+        })
+
+        if ( statements.length > 0 ) {
+            queryInner = SequelizeHelper.Sequelize.or(statements)
+            queryInner = SequelizeHelper.Sequelize.or.apply(this, statements)
+
+            //find all matching records
+            var query = {where: queryInner};
+
+            self.Table.findAll(query).then(function (results) {
+                self.proc('found existing records');
+                sh.each(results, function (i, eRecord ) {
+                    var eRecordId = eRecord.timestamp.getTime()+eRecord.source_node;
+                    var match = dictOfExistingItems[eRecordId];
+                    if ( match == null ) {
+                        self.proc('warning', 'look for record did not have in database')
+                        //newRecords.push()
+                        return;
+                    }
+
+                    var match=  eRecord.dataValues.updatedAt2.toString() == match.updatedAt2.toString()
+                    self.proc('compare',
+                        eRecord.name,
+                        match,
+                        eRecord.dataValues.updatedAt2, match.updatedAt2);
+
+                    if (match) {
+                        self.proc('warning', 'rec\'v object that is already up to date', eRecord.dataValues)
+                    } else {
+                        eRecord.updateAttributes(match);
+                    }
+                    //handled item
+                    dictOfExistingItems[eRecordId] = null;
+                });
+                createNewRecords();
+            });
+        } else {
+            createNewRecords();
+        }
+
+        //update them all
+
+        //add the rest
+        function createNewRecords() {
+            //mixin un copied records
+            sh.each(dictOfExistingItems, function addToNewRecords(i, eRecord ) {
+                if ( eRecord == null ) {
+                    //already updated
+                    return;
+                }
+                eRecord.id = null;
+                newRecords.push(eRecord);
+            });
+
+            if ( newRecords.length > 0 ) {
+                self.Table.bulkCreate(newRecords).then(function (objs) {
+
+                    self.proc('all records created', objs.length);
+                    //sh.each(objs, function (i, eRecord) {
+                    // var match = dict[eRecord.timestamp.toString() + eRecord.source]
+                    // eRecord.updateAttributes(match)
+                    // })
+                    sh.callIfDefined(fx);
+
+                }).catch(function (err) {
+                    console.error(err, err.stack)
+                    throw  err
+                })
+            } else {
+                self.proc('no records to create')
+                sh.callIfDefined(fx)
+            }
+
+
+
+        }
+
+    }
+    /**
+     * time_rand_id <-- this becomes new version
+     * source
+     * version
+     * deleted
+     *
+     */
+    p.checkSources = function (fx) {
+        var dbHelper = {};
+        self.dbHelper = dbHelper;
+        dbHelper.createDatabase = function () {
+            var mysql      = require('mysql');
+            var connection = mysql.createConnection({
+                host     : 'localhost',
+                user     : 'root',
+                password : 'password'
+            });
+
+            connection.connect(function(err) {
+                if (err) {
+                    console.error('error connecting: ' + err.stack);
+                    return;
+                }
+
+                console.log('connected as id ' + connection.threadId);
+
+
+                connection.query("CREATE DATABASE  IF NOT EXISTS test_sync;", function(err, rows) {
+                    // connected! (unless `err` is set)
+                    dbHelper.createTable()
+                });
+            });
+        }
+
+        dbHelper.createTable = function (sttgs) {
+            sttgs = sh.dv(sttgs, {})
+            if ( self.settings.mysql == null ) {
+                var db = {}
+                db.database = 'test_sync';
+                db.user = 'root';
+                db.password = 'password';
+                db.port = '3306';
+
+                self.settings.mysql = db;
+            }
+            var mysqlSettings = sh.clone(self.settings.mysql);
+            mysqlSettings.cb = finishedInitMySQL;
+            var sequelize =  SequelizeHelper.createSQL(mysqlSettings);
+            function finishedInitMySQL(sequelize){
+                self.sequelize = sequelize;
+
+                var tableSettings = {};
+                if ( dbHelper.noSync == true ) {
+                    tableSettings.force = false
+                    tableSettings.sync = false;
+                }
+                tableSettings.name = self.tableName
+                tableSettings.name = sh.dv(sttgs.name, tableSettings.name);
+                tableSettings.createFields =  {name: "", desc: "", user_id: 0,
+                    imdb_id: "", content_id: 0,
+                    progress:0}
+                var reqD =  {source_node:"", timestamp:new Date(),
+                    updatedAt2:new Date(), //make another field that must be changed
+                    version:0, deleted:true}
+                //global_updated_at
+                //time_id
+                sh.mergeObjects(reqD, tableSettings.createFields);
+                tableSettings.sequelize = sequelize;
+                SequelizeHelper.defineTable(tableSettings, doneWithTable);
+            }
+
+            function doneWithTable(table) {
+                console.log('table ready')
+                if ( sttgs.storeTable != false ) {
+                    self.Table = table;
+                    self.setVersion();
+                }
+                sh.callIfDefined(fx);
+                sh.callIfDefined(sttgs.fx, table)
+            }
+        }
+        //TODO: rip from settings using mysql
+        dbHelper.getExistingTable = function (name, fx) {
+            var settings = {};
+            settings.name = name;
+            settings.fx = fx;
+            settings.storeTable = false;
+            dbHelper.createTable(settings);
+        }
+        //test
+        //create database
+        dbHelper.createDatabase()
+        //create table
+
+        //check the table
+
+
+
+        //need col
+    }
+
+
+    function defineTests() {
+        p.compareTables = function compareTables(nameA, nameB, throwError, fx) {
+
+            var t = EasyRemoteTester.create('test Breadcrumbs API',{});
+            var data = {};
+
+            if ( MySQLDataRepo.dict != null ) {
+                MySQLDataRepo.dict= {};
+            }
+
+            self.dbHelper.noSync = true;
+
+            t.add(function getTable1() {
+                self.dbHelper.getExistingTable(nameA,
+                    function (tbl) {
+                        data.table1 = tbl;
+                        console.error('got back', tbl.name, nameA)
+                        // MySQLDataRepo.dict[] =
+                        t.cb();
+                    }
+                )
+            });
+            t.add(function getTable2() {
+                self.dbHelper.getExistingTable(nameB,
+                    function (tbl) {
+                        data.table2 = tbl;
+                        console.error('got back', tbl.name, nameB)
+                        t.cb();
+                    }
+                )
+            });
+            t.add(function countTable1() {
+                self.dbHelper2.count(function (count) {
+                    data.count1 = count;
+                    t.cb();
+                }, data.table1, data.table1.name)
+            });
+
+            t.add(function countTable2() {
+                self.dbHelper2.count(function (count) {
+                    data.count2 = count;
+                    t.cb();
+                }, data.table2, data.table2.name)
+            })
+
+            t.add(function compareSize() {
+                // (data.count1 == data.count2, 'table not same size' )
+
+                console.log(nameA,data.count1,
+                    nameB, data.count2, data.count1 == data.count2 );
+
+                if ( throwError != false )
+                    t.assert(data.count1 == data.count2,'table not same size' );
+
+                sh.callIfDefined(fx);
+                t.cb();
+            })
+
+        }
+    }
+
+    defineTests();
+
+    p.proc = function debugLogger() {
+        if ( self.silent == true) {
+            return
+        }
+        arguments = sh.convertArgumentsToArray(arguments)
+        arguments.unshift(self.name+'-repo:')
+        sh.sLog(arguments)
+    }
+}
+
+exports.MySQLDataRepo = MySQLDataRepo;
+
+
+function Actor() {
+    var p = Actor.prototype;
+    p = this;
+    var self = this;
+
+    var types = {};
+    types.SyncVersion_AmICurrentWithYou = 'sync_version';
+    types.SyncGet_Records = 'SyncGet_Records'; //ask peer to send back records
+    types.RequestSync = 'RequestSync';//tell peers to make sync request
+    types.SyncComplete = 'SyncComplete';//tell peers to make sync request
+    types.SyncData = 'SyncData'; //Data results coming back
+    types.CrudCreate = 'CrudCreate';
+    types.CrudUpdate = 'CrudUpdate =';
+    types.CrudDelete = 'CrudDelete';
+
+    p.init = function method1(url, appCode) {
+        self.linksTo = [];
+        self.peers = self.linksTo;
+        url = sh.dv(url, {});
+        self.settings = url;
+        if ( self.settings.name == null ) {
+            self.settings.name = self.name;
+        }
+
+        self.settings.fileSettings = self.name+'_dal_node.json'
+
+        self.data = {};
+        self.data.port;
+
+        self.dictPeers = {};
+
+        self.types = {};
+        self.types = types;
+
+        self.repo = new MySQLDataRepo();
+        self.repo.name = self.name;
+        self.repo.init(null,  self.fxStartInit);
+
+        self.settings.peers= [];
+    }
+
+    p.linkTo = function linkTo(peer) {
+        self.linksTo.push(peer)
+        self.dictPeers[peer.name]=peer;
+        self.settings.peers.push(peer.name);
+    }
+
+    function defineUtils() {
+        p.utils = {};
+        /**
+         * I need to forward a crud request to a pper
+         * but i do not want to duplicate them
+         * so go through my peers, if any of my peers, links to this node, then do not forward it
+         *
+         * IE, b links to a, c and d
+         * requests from c, should go to a,
+         * requests from a should go to c and d
+         * @param x
+         */
+        p.utils.forwardRequestsTo = function (nodeFrom) {
+            var sendTo = [];
+            sh.each(self.peers, function (i, peer) {
+                if (peer == nodeFrom) {
+                    return;
+                }
+                if (peer.settings.peers.indexOf(nodeFrom.name)) {
+                    return;
+                }
+                sendTo.push(peer);
+            });
+
+            return sendTo;
+        }
+    }
+    defineUtils();
+
+    function defineConnection() {
+        p.connectToOthers = function connectToOthers(url, appCode) {
+            var sockets = [];
+            self.sockets = sockets;
+            sh.each( self.linksTo, function (i,peer) {
+                var url = 'http://localhost'+':'+ peer.settings.port;
+                console.log('trying to reach', peer.name, url)
+                var socket = require('socket.io-client')(url);
+                socket.on('connect', function(){
+                    console.log('connected', peer.name, self.name )
+                    self.con.sync()
+                });
+                socket.on('event', function(data){});
+                socket.on('disconnect', function(){});
+                sockets.push(socket);
+                peer.data.url= url;
+                peer.socket = socket;
+                //TODO: get stored version from db
+            });
+
+
+            self.connected = true
+            self.fxStartInit();
+
+        }
+
+
+        p.fxStartInit = function () {
+
+            if ( self.repo.ready != true ||
+                self.connected != true
+            ) {
+                return
+            }
+            if ( self.ranInit == true ) {
+                return
+            }
+            self.ranInit = true;
+            setTimeout(function () {
+                if ( self.fxStart != null )
+                    self.fxStart();
+
+            }, 500)
+        }
+
+        p.start = function start( ) {
+            // self.linksTo.push(url)
+
+            // Setup basic express server
+            var express = require('express');
+            var app = express();
+            var server = require('http').createServer(app);
+            var io = require('socket.io')(server);
+            var port = process.env.PORT || 3000;
+            port = sh.dv(  self.settings.port, port);
+            console.log(self.name, port );
+            server.listen(port, function () {
+                console.log('Server listening at port %d', port, self.name);
+                self.connectToOthers();
+            });
+            // Routing
+            app.use(express.static(__dirname + '/public'));
+            // Chatroom
+            // usernames which are currently connected to the chat
+            var usernames = {};
+            var numUsers = 0;
+            io.on('connection', function (socket) {
+                self.socket = socket;
+                self.con.defineCrud();
+                self.con.defineCrud_Sync();
+                self.con.defineSync();
+                var addedUser = false;
+                // when the client emits 'new message', this listens and executes
+                socket.on('new message', function (data) {
+                    // we tell the client to execute 'new message'
+                    socket.broadcast.emit('new message', {
+                        username: socket.username,
+                        message: data
+                    });
+                });
+                // when the client emits 'add user', this listens and executes
+                socket.on('add user', function (username) {
+                    // we store the username in the socket session for this client
+                    socket.username = username;
+                    // add the client's username to the global list
+                    usernames[username] = username;
+                    ++numUsers;
+                    addedUser = true;
+                    socket.emit('login', {
+                        numUsers: numUsers
+                    });
+                    // echo globally (all clients) that a person has connected
+                    socket.broadcast.emit('user joined', {
+                        username: socket.username,
+                        numUsers: numUsers
+                    });
+                });
+                // when the client emits 'typing', we broadcast it to others
+                socket.on('typing', function () {
+                    socket.broadcast.emit('typing', {
+                        username: socket.username
+                    });
+                });
+
+
+
+                // when the client emits 'stop typing', we broadcast it to others
+                socket.on('stop typing', function () {
+                    socket.broadcast.emit('stop typing', {
+                        username: socket.username
+                    });
+                });
+                // when the user disconnects.. perform this
+                socket.on('disconnect', function () {
+                    // remove the username from global usernames list
+                    if (addedUser) {
+                        delete usernames[socket.username];
+                        --numUsers;
+                        // echo globally that this client has left
+                        socket.broadcast.emit('user left', {
+                            username: socket.username,
+                            numUsers: numUsers
+                        });
+                    }
+                });
+            });
+
+        }
+    }
+    defineConnection();
+
+    function defineProcesses() {
+
+        p.con = {};
+        p.connection = p.con;
+
+        p.connection.startConnection = function startconnect() {
+            // self.sycned=false;
+        }
+
+        /**
+         * Tell peers to get my newest updates if they out of
+         * date with me.
+         */
+        p.con.sync = function () {
+            self.settings.version = self.repo.getVersion();
+            sh.each( self.peers, function (i,peer) {
+                //Translation: I am at version X for your client.x-x--xPlease send any updates
+                //Check your version for me ... if there is  not a match ... request
+                //an update
+                peer.socket.emit(types.SyncVersion_AmICurrentWithYou, {
+                    version:peer.version,
+                    name:self.name,
+                    data:sh.clone(self.settings)
+                });
+            });
+        };
+
+
+        /**
+         * Odd Grammar leads to confusion
+         * This method is more practical
+         *
+         * Send my version all data to peers
+         * send up to
+         */
+        p.con.sync_Forward = function () {
+            //self.settings.version = self.repo.getVersion();
+            sh.each( self.peers, function (i,peer) {
+                //Translation: I am at version X for your client.x-x--xPlease send any updates
+                //Check your version for me ... if there is  not a match ... request
+                //an update
+                peer.socket.emit(types.SyncVersion_AmICurrentWithYou, {
+                    version:peer.version,
+                    name:self.name,
+                    data:sh.clone(self.settings)
+                });
+            });
+        };
+
+        p.con.requestSync = function () {
+
+            self.repo.setVersion(requestSyncAction)
+
+            function requestSyncAction() {
+                self.settings.version = self.repo.getVersion();
+                sh.each( self.peers, function (i,peer) {
+                    self.proc(sh.q(self.name), 'asking', sh.q(peer.name), 'to sync')
+                    peer.socket.emit(types.RequestSync, {
+                        version:peer.version,
+                        name:self.name,
+                        data:sh.clone(self.settings)
+                    });
+                });
+            }
+
+        };
+
+        p.con.defineSync = function () {
+            //Translation: This peer is at version X, is he current?
+            //if not, tell him to sync to me
+            self.socket.on(types.SyncVersion_AmICurrentWithYou, function (data) {
+                var peer = self.dictPeers[data.data.name];
+
+                var vFrom = data.version;
+                var vFrom_PeersVersion = vFrom;
+
+                var vTo = peer.version; //self.settings.version;
+                vTo = self.repo.getVersion();
+                if ( vTo == null ) {
+                    vTo = 0
+                }
+                var vMyVersionOfDb = vTo;
+
+                //  var vTo = data.data.version;
+                // var vFrom = self.settings.version;
+                self.proc(types.SyncVersion_AmICurrentWithYou, 'sync test', self.name,
+                    vMyVersionOfDb ,'peers version is ', data.name, vFrom_PeersVersion);
+
+                if ( vFrom_PeersVersion < vMyVersionOfDb ) {
+                    self.proc('need to update', sh.q(peer.name), 'is at ', vFrom_PeersVersion, 'I am at', vMyVersionOfDb)
+                    //translation: I need to update, please give me all data between versions
+                    peer.socket.emit(types.SyncGet_Records, {
+                        from:vFrom,
+                        to:vTo,
+                        name:self.name,
+                        data:sh.clone(self.settings)
+                    });
+                }
+            });
+
+            //TODO: should we sync all peers? ... no b/c if new node comes up it needs what
+            //it needs
+            //handle sync requests
+            //translation: this peer needs some data to update, send back records
+            self.socket.on(types.SyncGet_Records, function (data) {
+                var peer = self.dictPeers[data.data.name];
+
+                var vFrom = data.data.version;
+                var vTo = self.settings.version;
+                console.log('Got sync request from ', sh.q(peer.name), '---', types.SyncGet, sh.q(self.name),
+                    self.settings.version ,'from', data.name, data.data.version);
+
+                //self.proc(self.name, 'need to get', vFrom)
+
+                if (vFrom == vTo) {
+                    self.proc('skipping sync', 'versions are the same')
+                    return;
+                }
+
+                //callback will update records
+                //var records =
+
+                self.repo.getRecords(vTo,
+                    function onSendRecords(records, version) {
+
+                        self.proc(sh.q(self.name)+':', 'sending ', version, 'to', sh.q(peer.name), records.length)
+                        peer.socket.emit(types.SyncData, {
+                            from:vFrom,
+                            to:version,
+                            name:self.name,
+                            data:sh.clone(self.settings),
+                            newVersion:version,
+                            records:records //TODO: enforce maximum size
+                        });
+
+                        //if sync over ...
+                        if ( records.length ==0 ){
+                            /*peer.socket.emit(types.SyncComplete, {
+                             from:vFrom,
+                             to:version,
+                             name:self.name,
+                             data:sh.clone(self.settings),
+                             newVersion:version,
+                             records:records //TODO: enforce maximum size
+                             });*/
+                            //
+                            self.proc('done syncing')
+                            setTimeout(function(){
+                                //self.con.requestSync();
+                                self.con.sync();
+                            }, 1000)
+
+                        }
+                    });
+                //if ( vFrom > vTo ) {
+                //}
+            });
+
+            self.socket.on(types.SyncData, function (data) {
+                var peer = self.dictPeers[data.data.name];
+                var vTo = data.data.version;
+                var vFrom = peer.version;
+                console.log(  types.SyncData, self.name,
+                    self.settings.version ,'from', data.name,vFrom, '-->', vTo);
+                self.proc('brought', 'connection', sh.paren(sh.q(self.name)+','+sh.q(peer.name))
+                    , 'up to version', vTo);
+                self.repo.upsert(data.records);
+                peer.version = vTo;
+            });
+
+            self.socket.on(types.SyncComplete, function (data) {
+                var peer = self.dictPeers[data.data.name];
+                var vTo = data.data.version;
+                var vFrom = peer.version;
+                //console.log(  types.SyncComplete, self.name,
+                //    self.settings.version ,'from', data.name,vFrom, '-->', vTo);
+                self.proc(types.SyncComplete,'brought', 'connection', sh.paren(sh.q(self.name)+','+sh.q(peer.name))
+                    , 'up to version', vTo);
+
+                peer.version = vTo;
+                var otherPeers = self.utils.forwardRequestsTo(peer)
+                //no need toworry about peer as # shuld be thesame
+                self.con.requestSync();
+
+            });
+
+            self.socket.on(types.RequestSync, function (data) {
+                self.con.sync();
+            });
+        }
+
+
+
+        /**
+         * C R U D L
+         * Create method stubs for each action
+         * update the version after each update, forward processing to repo
+         *
+         * method to send creation
+         * method to handle creation
+         */
+        p.connection.defineCrud = function defineCrud() {
+
+            p.connection.create = function create(records, version) {
+                version = sh.dv(version, self.repo.getVersion());
+                self.settings.version = version;
+                sh.each( self.peers, function (i,peer) {
+                    peer.socket.emit(types.CrudCreate, {
+                        version:self.settings.version,
+                        name:self.name,
+                        records:records,
+                        data:sh.clone(self.settings)
+                    });
+                });
+            }
+
+            self.socket.on(types.CrudCreate, function (data) {
+                var peer = self.dictPeers[data.data.name];
+                var vTo = data.data.version;
+                self.proc(self.name, types.CrudCreate, vTo)
+                //callback will update records
+                self.repo.create(data.records)
+            });
+
+            p.connection.update = function update(records, version) {
+                version = sh.dv(version, self.repo.getVersion());
+                self.settings.version = version;
+                sh.each( self.peers, function (i,peer) {
+                    peer.socket.emit(types.CrudUpdate, {
+                        version:self.settings.version,
+                        name:self.name,
+                        records:records,
+                        data:sh.clone(self.settings)
+                    });
+                });
+            }
+
+            self.socket.on(types.CrudUpdate, function (data) {
+                var peer = self.dictPeers[data.data.name];
+                var vTo = data.data.version;
+                self.proc(self.name, types.CrudUpdate, vTo)
+                //callback will update records
+                self.repo.update(data.records)
+            });
+
+
+
+
+            p.connection.delete = function fxDelete(records, version) {
+                version = sh.dv(version, self.repo.getVersion());
+                self.settings.version = version;
+                sh.each( self.peers, function (i,peer) {
+                    peer.socket.emit(types.CrudDelete, {
+                        version:self.settings.version,
+                        name:self.name,
+                        records:records,
+                        data:sh.clone(self.settings)
+                    });
+                });
+            }
+
+            self.socket.on(types.CrudDelete, function (data) {
+                var peer = self.dictPeers[data.data.name];
+                var vTo = data.data.version;
+                self.proc(self.name, types.CrudDelete, vTo)
+                //callback will update records
+                self.repo.fxDelete(data.records)
+            });
+
+
+        }
+
+        /**
+         * Override crud methods with methods that sync
+         */
+        p.connection.defineCrud_Sync = function defineCrud() {
+
+            p.connection.create = function create(records, version) {
+
+                self.repo.upsert(records, function recordsCreated() {
+                    self.con.requestSync();
+                })
+                return;
+                /*
+                 version = sh.dv(version, self.repo.getVersion());
+                 self.settings.version = version;
+                 sh.each( self.peers, function (i,peer) {
+                 peer.socket.emit(types.CrudCreate, {
+                 version:self.settings.version,
+                 name:self.name,
+                 records:records,
+                 data:sh.clone(self.settings)
+                 });
+                 });*/
+            }
+
+            self.socket.on(types.CrudCreate, function (data) {
+                var peer = self.dictPeers[data.data.name];
+                var vTo = data.data.version;
+                self.proc(self.name, types.CrudCreate, vTo)
+                //callback will update records
+                self.repo.create(data.records)
+            });
+
+            p.connection.update = function update(records, version) {
+                version = sh.dv(version, self.repo.getVersion());
+                self.settings.version = version;
+                sh.each( self.peers, function (i,peer) {
+                    peer.socket.emit(types.CrudUpdate, {
+                        version:self.settings.version,
+                        name:self.name,
+                        records:records,
+                        data:sh.clone(self.settings)
+                    });
+                });
+            }
+
+            self.socket.on(types.CrudUpdate, function (data) {
+                var peer = self.dictPeers[data.data.name];
+                var vTo = data.data.version;
+                self.proc(self.name, types.CrudUpdate, vTo)
+                //callback will update records
+                self.repo.update(data.records)
+            });
+
+
+
+
+            p.connection.delete = function fxDelete(records, version) {
+                version = sh.dv(version, self.repo.getVersion());
+                self.settings.version = version;
+                sh.each( self.peers, function (i,peer) {
+                    peer.socket.emit(types.CrudDelete, {
+                        version:self.settings.version,
+                        name:self.name,
+                        records:records,
+                        data:sh.clone(self.settings)
+                    });
+                });
+            }
+
+            self.socket.on(types.CrudDelete, function (data) {
+                var peer = self.dictPeers[data.data.name];
+                var vTo = data.data.version;
+                self.proc(self.name, types.CrudDelete, vTo)
+                //callback will update records
+                self.repo.fxDelete(data.records)
+            });
+
+
+        }
+        /**
+         * TODO: implement smark check-sum feature
+         */
+        p.connection.verify = function defineVerify() {
+            //divert to sync
+            self.con.sync();
+        }
+
+
+    }
+
+    defineProcesses();
+
+
+
+
+    p.saveState = function saveState() {
+        /*
+         peers
+         */
+        var save = {}
+        save.settings= self.settings;
+        var peersTemp = [];
+        sh.each(self.peers, function onConnectPeer(i, peer) {
+            var tempPeer = {}
+            tempPeer.name = peer.name;
+            tempPeer.settings= peer.settings;
+            tempPeer.version = peer.version;
+            peersTemp.push(tempPeer)
+        });
+        save.peers = peersTemp;
+        save.version = self.version;
+
+        var str = JSON.stringify(save);
+        str = sh.toJSONString(save);
+        sh.writeFile(self.settings.fileSettings, str);
+    }
+
+    p.loadState = function loaState() {
+        var obj = sh.readFile(self.settings.fileSettings, '');
+        obj = JSON.parse(obj);
+
+
+
+        var peer = self.dictPeers[data.data.name];
+
+        if ( self.settings.reloadPeers != false ) {
+            self.peersX = obj.peers;
+            //go thoguth peers, reconnect them up
+            sh.each(self.peersX, function onConnectPeer(i, peer) {
+                self.linkTo(peer);
+            });
+        }
+    }
+
+    p.saveSettingsEveryXMinutes = function saveSettingsEveryXMinutes(min) {
+        clearInterval(self.saveInterval);
+        self.saveInterval = setInterval(self.saveState, 1000*60*min)
+    }
+
+
+
+    p.proc = function debugLogger() {
+        if ( self.silent == true) {
+            return
+        }
+        sh.sLog(arguments)
+    }
+}
+
+exports.Actor = Actor;
+
+
+function TopologyHelper() {
+    var p = TopologyHelper.prototype;
+    p = this;
+    var self = this;
+    p.loadTop = function loadTop(topology, dictNodeSettings) {
+
+        var count =  0
+        function createNewActor(name, settings) {
+            var actor = new Actor()
+            actor.name = name
+            actor.init();
+            actor.settings.port = count + 3000;
+            count++
+            return actor;
+        }
+
+        var dictNodes = {};
+        var allNodes = [];
+
+        sh.each(topology, function linkPairs(i,topSet) {
+
+            var a = topSet[0];
+            var b = topSet[1];
+
+            if ( dictNodes[a]==null) {
+                var nodeA = createNewActor(a)
+                allNodes.push(nodeA)
+                dictNodes[a] = nodeA;
+            } else {
+                nodeA =  dictNodes[a]
+            }
+
+            if ( sh.isArray(b) == false ) {
+                b = [b];
+            }
+
+            sh.each(b, function createBNodes(i,b){
+                if ( dictNodes[b]!=null) {
+                    nodeB = dictNodes[b];
+                } else {
+                    var nodeB = createNewActor(b)
+                    allNodes.push(nodeB)
+                    dictNodes[b] = nodeB;
+                }
+                //make copies to simulate real modeling
+                nodeA.linkTo(sh.clone(nodeB));
+                nodeB.linkTo(sh.clone(nodeA));
+            })
+
+        })
+
+
+        /* //full mesh
+         sh.each(allNodes, function linkAllNodes(i,nodeFrom){
+         nodeFrom.settings.port = 3000 + i;
+         sh.each(allNodes, function linkAllNodes(i,nodeTo){
+         if ( nodeFrom == nodeTo ) { return }
+         nodeFrom.linkTo(nodeTo)
+         nodeTo.linkTo(nodeFrom)
+         })
+         });
+         */
+
+        sh.each(dictNodeSettings, function addNode(i, nodeSettings) {
+            var node = dictNodes[i];
+            if ( nodeSettings.version != null )
+                node.repo.version = nodeSettings.version;
+        });
+
+
+        sh.each(allNodes, function linkAllNodes(i,nodeFrom){
+            nodeFrom.start();
+        })
+
+
+        return dictNodes;
+    }
+
+    p.proc = function debugLogger() {
+        if ( self.silent == true) {
+            return
+        }
+        sh.sLog(arguments)
+    }
+}
+
+exports.TopologyHelper = TopologyHelper;
+
+if (module.parent == null) {
+    var t = new TopologyHelper();
+    'a --> b --> [c,d]'
+    var top = [
+        ['a', 'b'],
+        ['b', ['c', 'd']]
+    ]
+    var dict = {}
+    dict['a'] = {}
+    dict['a'].version = 1;
+    var dict2 = t.loadTop(top, dict);
+
+    var nodeA = dict2['a'];
+    var nodeD = dict2['d'];
+    //function createItems() {
+    nodeA.fxStart = function () {
+
+
+
+        var t = EasyRemoteTester.create('Test connection basics',{});
+        var data = {};
+
+        t.add(function addFirstRecord() {
+            nodeA.con.create({name: "roger"})
+            nodeA.repo.compareTables('a_table', 'b_table', false);
+            t.cb();
+        });
+        t.wait(6)
+
+        function saveState() {
+            sh.each(dict2, function saveState(i, node){
+                node.saveState();
+            })
+            t.cb();
+        };
+
+        t.add(saveState);
+
+
+        t.wait(1)
+
+        function verifyTables() {
+            var t2 = EasyRemoteTester.create('Test connection basics',{});
+            var data = {};
+            function compareTables(a, b) {
+                var tableA = a+'_table';
+                var tableB = b+'_table';
+                return function () {
+                    nodeA.repo.compareTables(tableA,tableB);
+                    t2.cb();
+                }
+            }
+            /*
+             nodeA.repo.compareTables('a_table', 'b_table');
+             nodeA.repo.compareTables('b_table', 'c_table');
+             nodeA.repo.compareTables('a_table', 'b_table');
+             nodeA.repo.compareTables('a_table', 'd_table');
+             */
+            t2.add(compareTables('a', 'b'))
+            t2.add(compareTables('b', 'c'))
+            t2.add(compareTables('a', 'b'))
+            t2.add(compareTables('a', 'd'))
+
+            t2.fxDone = t.cb;
+
+        }
+        t.add(verifyTables);
+
+        t.wait(2)
+        t.add(function addFirstRecord() {
+            nodeD.con.create({name: "roger"})
+            nodeA.repo.compareTables('a_table', 'b_table', false);
+            t.cb();
+        });
+        t.wait(6)
+        t.add(verifyTables);
+    }
+
+
+
+
+    // }
+    //sh.wait1Sec(createItems);
+    //setTimeout(createItems, 3000)
+
+
+}

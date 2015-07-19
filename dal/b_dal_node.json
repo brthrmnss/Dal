@@ -1,0 +1,51 @@
+{
+	"settings": {
+		"name": "b",
+		"fileSettings": "b_dal_node.json",
+		"fileLog": "b_dal_node_log.txt",
+		"peers": [
+			"a",
+			"c",
+			"d"
+		],
+		"port": 3001,
+		"version": 1436594683000
+	},
+	"peers": [
+		{
+			"name": "a",
+			"settings": {
+				"name": "a",
+				"fileSettings": "a_dal_node.json",
+				"fileLog": "a_dal_node_log.txt",
+				"peers": [
+					"b"
+				],
+				"port": 3000
+			},
+			"version": 1436594683000
+		},
+		{
+			"name": "c",
+			"settings": {
+				"name": "c",
+				"fileSettings": "c_dal_node.json",
+				"fileLog": "c_dal_node_log.txt",
+				"peers": [],
+				"port": 3002
+			},
+			"version": 1436594683000
+		},
+		{
+			"name": "d",
+			"settings": {
+				"name": "d",
+				"fileSettings": "d_dal_node.json",
+				"fileLog": "d_dal_node_log.txt",
+				"peers": [],
+				"port": 3003
+			},
+			"version": 1436594683000
+		}
+	]
+}
